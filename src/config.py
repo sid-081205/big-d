@@ -26,9 +26,10 @@ STATIONS_GEOJSON = "tfl_stations.geojson"
 IMD_CSV = "imd_2019.csv"
 CROWDING_XLSX = "station_crowding.xlsx"
 LSOA_BOUNDARIES_GPKG = "lsoa_boundaries.gpkg"
-PTAL_CSV = "ptal_grid.csv"
-CENSUS_POPULATION_CSV = "census_2021_population.csv"
-CENSUS_ECONOMIC_CSV = "census_2021_economic_activity.csv"
+PTAL_CSV = "ptal_grid.csv"                          # legacy 100m grid
+PTAL_LSOA_GEOJSON = "LSOA_aggregated_PTAL_stats_2023.geojson"
+CENSUS_POPDEN_CSV = "census2021-ts006-lsoa-populationdensity.csv"
+CENSUS_ECONOMIC_CSV = "census2021-ts066-lsoa-economicactivity.csv"
 
 # ── Output Filenames (in data/processed/) ──────────────────────────────
 MASTER_GPKG = "master_lsoa.gpkg"

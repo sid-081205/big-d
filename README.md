@@ -52,11 +52,13 @@ The following datasets require manual download from their respective portals. Sa
 
 | Dataset | Filename | Source |
 |---------|----------|--------|
-| LSOA boundaries | `lsoa_boundaries.gpkg` | [ONS Open Geography Portal](https://geoportal.statistics.gov.uk/) — search "LSOA Boundaries" and download the London subset as GeoPackage |
-| PTAL grid | `ptal_grid.csv` | [TfL Planning](https://data.london.gov.uk/) — search "Public Transport Accessibility Levels" and download the 100m grid CSV |
-| Census 2021 population | `census_2021_population.csv` | [NOMIS](https://www.nomisweb.co.uk/) — Census 2021 TS006 (population density) by LSOA |
-| Census 2021 economic activity | `census_2021_economic_activity.csv` | [NOMIS](https://www.nomisweb.co.uk/) — Census 2021 TS066 (economic activity status) by LSOA |
-| Station crowding | `station_crowding.xlsx` | [TfL Open Data](https://tfl.gov.uk/info-for/open-data-users/) — Annual station entry/exit counts |
+| LSOA boundaries (2011) | `LSOA_2011_London_gen_MHW.shp` | [London Datastore](https://data.london.gov.uk/) — Statistical GIS Boundary Files for London |
+| PTAL (LSOA-aggregated) | `LSOA_aggregated_PTAL_stats_2023.geojson` | [London Datastore](https://data.london.gov.uk/) — PTAL statistics aggregated to LSOA level (2021 codes) |
+| Census 2021 pop density | `census2021-ts006-lsoa-populationdensity.csv` | [NOMIS](https://www.nomisweb.co.uk/) — Census 2021 TS006 (population density) by LSOA |
+| Census 2021 economic activity | `census2021-ts066-lsoa-economicactivity.csv` | [NOMIS](https://www.nomisweb.co.uk/) — Census 2021 TS066 (economic activity status) by LSOA |
+| Station entry/exit | `AC2023_AnnualisedEntryExit.xlsx` | [TfL Open Data](https://tfl.gov.uk/info-for/open-data-users/) — Annual station entry/exit counts |
+
+> **Note:** The LSOA boundaries use 2011 codes (4,835 London LSOAs). PTAL and Census data use 2021 codes (4,994 LSOAs). ~96% of codes match directly; ~3.6% of LSOAs will have NaN for 2021-coded data due to boundary changes.
 
 ## Running the Analysis
 

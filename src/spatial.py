@@ -70,9 +70,9 @@ def spatial_average_ptal(
 def build_master_geodataframe(
     lsoa_gdf: gpd.GeoDataFrame,
     stations_gdf: gpd.GeoDataFrame,
-    ptal_gdf: gpd.GeoDataFrame | None = None,
+    ptal_df: pd.DataFrame | None = None,
     imd_df: pd.DataFrame | None = None,
-    census_pop_df: pd.DataFrame | None = None,
+    census_popden_df: pd.DataFrame | None = None,
     census_econ_df: pd.DataFrame | None = None,
     save: bool = True,
 ) -> gpd.GeoDataFrame:
@@ -81,9 +81,9 @@ def build_master_geodataframe(
     Args:
         lsoa_gdf: LSOA boundary polygons (must have 'lsoa_code' column).
         stations_gdf: Station point locations.
-        ptal_gdf: PTAL grid points (optional).
+        ptal_df: Pre-aggregated PTAL per LSOA (must have 'lsoa_code', 'mean_ptal_ai').
         imd_df: IMD 2019 scores (optional, must have 'lsoa_code').
-        census_pop_df: Census population (optional, must have 'lsoa_code').
+        census_popden_df: Census 2021 population density (optional, must have 'lsoa_code').
         census_econ_df: Census economic activity (optional, must have 'lsoa_code').
         save: Whether to save the result as GeoPackage.
 
@@ -96,10 +96,15 @@ def build_master_geodataframe(
     print("Computing distance to nearest station ...")
     master["dist_to_station_m"] = compute_nearest_station_distance(master, stations_gdf)
 
-    # 2. PTAL scores
-    if ptal_gdf is not None:
-        print("Computing spatial average PTAL ...")
-        master["mean_ptal_ai"] = spatial_average_ptal(master, ptal_gdf)
+    # 2. PTAL scores (tabular join on lsoa_code — data is pre-aggregated)
+    if ptal_df is not None and "lsoa_code" in ptal_df.columns:
+        print("Joining PTAL scores ...")
+        ptal_cols = [c for c in ptal_df.columns if c != "lsoa_code"]
+        master = master.merge(
+            ptal_df[["lsoa_code"] + ptal_cols],
+            on="lsoa_code",
+            how="left",
+        )
 
     # 3. IMD scores
     if imd_df is not None and "lsoa_code" in imd_df.columns:
@@ -111,12 +116,12 @@ def build_master_geodataframe(
             how="left",
         )
 
-    # 4. Census population
-    if census_pop_df is not None and "lsoa_code" in census_pop_df.columns:
-        print("Joining Census population ...")
-        pop_cols = [c for c in census_pop_df.columns if c not in ("lsoa_code",)]
+    # 4. Census 2021 population density
+    if census_popden_df is not None and "lsoa_code" in census_popden_df.columns:
+        print("Joining Census 2021 population density ...")
+        popden_cols = [c for c in census_popden_df.columns if c != "lsoa_code"]
         master = master.merge(
-            census_pop_df[["lsoa_code"] + pop_cols],
+            census_popden_df[["lsoa_code"] + popden_cols],
             on="lsoa_code",
             how="left",
         )
@@ -124,17 +129,27 @@ def build_master_geodataframe(
     # 5. Census economic activity
     if census_econ_df is not None and "lsoa_code" in census_econ_df.columns:
         print("Joining Census economic activity ...")
-        econ_cols = [c for c in census_econ_df.columns if c not in ("lsoa_code",)]
+        econ_cols = [c for c in census_econ_df.columns if c != "lsoa_code"]
         master = master.merge(
             census_econ_df[["lsoa_code"] + econ_cols],
             on="lsoa_code",
             how="left",
         )
 
-    # Compute area and population density if population available
+    # Derived columns
     master["area_km2"] = master.geometry.area / 1e6
+
+    # Population from shapefile (USUALRES) — rename for clarity
+    if "USUALRES" in master.columns:
+        master = master.rename(columns={"USUALRES": "population"})
+
+    # Population density from 2011 boundaries (population / area)
     if "population" in master.columns:
         master["pop_density_km2"] = master["population"] / master["area_km2"]
+
+    # Employment rate from census economic data
+    if "in_employment" in master.columns and "total_16plus" in master.columns:
+        master["employment_rate"] = master["in_employment"] / master["total_16plus"]
 
     if save:
         out_path = DATA_PROCESSED / MASTER_GPKG
