@@ -17,6 +17,7 @@
 
 ### 3. journey time optimisation
 - dijkstra's on tube graph to compute current shortest paths
+- use historical data on tube additions to study how tap-ins/outs changed to predict future behaviour
 - simulate adding candidate nodes, measure avg journey time delta
 - identify worst circuity origin-destination pairs
 - cross-london (north-south) connectivity improvements
