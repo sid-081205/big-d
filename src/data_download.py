@@ -258,6 +258,5 @@ def download_all() -> dict[str, Path]:
     print("=" * 60)
     return results
 
-
 if __name__ == "__main__":
     download_all()
