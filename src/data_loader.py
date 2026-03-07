@@ -7,6 +7,8 @@ the canonical names used downstream:
     lsoa_code, lsoa_name, imd_score, mean_ptal_ai, population, ...
 """
 
+import re
+
 import pandas as pd
 import geopandas as gpd
 from pathlib import Path
@@ -14,7 +16,8 @@ from shapely.geometry import Point
 
 from src.config import (
     DATA_RAW, CRS_BNG, CRS_WGS84,
-    STATIONS_GEOJSON, LSOA_BOUNDARIES_GPKG, PTAL_CSV, PTAL_LSOA_GEOJSON,
+    STATIONS_GEOJSON, LSOA_BOUNDARIES_GPKG, LSOA_2021_GPKG,
+    PTAL_CSV, PTAL_LSOA_GEOJSON,
     IMD_CSV, CENSUS_POPDEN_CSV, CENSUS_ECONOMIC_CSV,
 )
 
@@ -44,16 +47,89 @@ def _resolve_path(primary: Path, *fallbacks: Path) -> Path:
     raise FileNotFoundError(f"None of these files exist: {tried}")
 
 
+def _normalise_station_name(name: str) -> str:
+    """Lowercase, strip TfL mode/type suffixes for name-matching."""
+    s = str(name).lower().strip()
+    for suffix in (
+        " underground station", " dlr station", " overground station",
+        " elizabeth line station", " rail station", " tfl station", " station",
+    ):
+        if s.endswith(suffix):
+            s = s[: -len(suffix)].strip()
+            break
+    s = re.sub(r"\s+(lu|lo|dlr|ezl|tfl)$", "", s)
+    s = s.replace("\u2019", "'").replace("\u2018", "'")
+    return s.strip()
+
+
+def join_crowding_to_stations(
+    stations_gdf: gpd.GeoDataFrame,
+    crowding_df: pd.DataFrame,
+) -> gpd.GeoDataFrame:
+    """Join crowding data onto a deduplicated station point GeoDataFrame.
+
+    Deduplicates the stations GeoJSON to one centroid per unique normalised
+    name, then joins and aggregates crowding ann_total.
+
+    Returns a GeoDataFrame with one row per unique station and columns:
+        name, name_norm, ann_total, geometry (BNG)
+    """
+    gdf = stations_gdf.copy()
+    gdf["name_norm"] = gdf["name"].apply(_normalise_station_name)
+
+    # Deduplicate: one centroid point per normalised name
+    dedup = (
+        gdf.dissolve(by="name_norm", aggfunc="first")
+        .reset_index()[["name_norm", "name", "geometry"]]
+    )
+    dedup["geometry"] = dedup.geometry.centroid
+
+    # Normalise crowding station names
+    crowding = crowding_df.copy()
+    crowding["name_norm"] = crowding["station_name"].apply(_normalise_station_name)
+
+    # Aggregate: sum ann_total for stations with multiple modes
+    crowding_agg = (
+        crowding.groupby("name_norm", as_index=False)["ann_total"].sum()
+    )
+
+    merged = dedup.merge(crowding_agg, on="name_norm", how="left")
+
+    matched = merged["ann_total"].notna().sum()
+    print(
+        f"Crowding joined: {matched}/{len(merged)} stations matched "
+        f"({matched / len(merged) * 100:.1f}%)"
+    )
+    return gpd.GeoDataFrame(merged, geometry="geometry", crs=stations_gdf.crs)
+
+
 # ── 1. LSOA boundaries ─────────────────────────────────────────────────────
 
 def load_lsoa_boundaries() -> gpd.GeoDataFrame:
-    """Load London LSOA boundary polygons (~4,835 LSOAs).
+    """Load London LSOA boundary polygons.
 
-    Tries (in order):
-      1. The GeoPackage path from config  (LSOA_BOUNDARIES_GPKG)
-      2. Extracted shapefile from data_download.py  (LSOA_2011_London_gen_MHW.shp)
-      3. Subdirectory from the London Datastore ZIP
+    Prefers the 2021 GeoPackage (England & Wales, filtered to London via
+    PTAL LSOA codes). Falls back to the 2011 shapefile if not found.
     """
+    gpkg_2021 = DATA_RAW / LSOA_2021_GPKG
+    if gpkg_2021.exists():
+        gdf = gpd.read_file(gpkg_2021)
+        # Filter to London using the PTAL GeoJSON's 4,994 London LSOA codes
+        ptal_path = DATA_RAW / PTAL_LSOA_GEOJSON
+        if ptal_path.exists():
+            ptal = gpd.read_file(ptal_path)
+            london_codes = set(ptal["LSOA21CD"])
+            gdf = gdf[gdf["LSOA21CD"].isin(london_codes)].copy()
+        gdf = _find_and_rename(gdf, ["LSOA21CD"], "lsoa_code")
+        gdf = _find_and_rename(gdf, ["LSOA21NM"], "lsoa_name")
+        for drop_col in ["LSOA21NMW", "BNG_E", "BNG_N", "GlobalID"]:
+            if drop_col in gdf.columns:
+                gdf = gdf.drop(columns=[drop_col])
+        gdf = gdf.to_crs(CRS_BNG)
+        print(f"Loaded {len(gdf)} LSOA boundaries (2021) from {gpkg_2021.name}")
+        return gdf
+
+    # Fallback to 2011 shapefile
     candidates = [
         DATA_RAW / LSOA_BOUNDARIES_GPKG,
         DATA_RAW / "LSOA_2011_London_gen_MHW.shp",
@@ -62,22 +138,18 @@ def load_lsoa_boundaries() -> gpd.GeoDataFrame:
     ]
     path = _resolve_path(*candidates)
     gdf = gpd.read_file(path)
-
-    # Standardise LSOA code column
     gdf = _find_and_rename(
         gdf,
         ["LSOA21CD", "LSOA11CD", "lsoa11cd", "lsoa21cd", "LSOA_CODE"],
         "lsoa_code",
     )
-    # Standardise LSOA name column
     gdf = _find_and_rename(
         gdf,
         ["LSOA21NM", "LSOA11NM", "lsoa11nm", "lsoa21nm", "LSOA_NAME"],
         "lsoa_name",
     )
-
     gdf = gdf.to_crs(CRS_BNG)
-    print(f"Loaded {len(gdf)} LSOA boundaries from {path.name}")
+    print(f"Loaded {len(gdf)} LSOA boundaries (2011 fallback) from {path.name}")
     return gdf
 
 
@@ -253,7 +325,15 @@ def load_census_economic_activity() -> pd.DataFrame:
 # ── 7. Crowding data (station entry/exit) ──────────────────────────────────
 
 def load_crowding_data() -> pd.DataFrame:
-    """Load TfL annual station entry/exit counts."""
+    """Load TfL annual station entry/exit counts (AC2023 or AC2024).
+
+    Handles the 6-row metadata header in the Excel file and returns a
+    clean DataFrame with canonical column names.
+
+    Returns DataFrame with columns:
+        mode, station_name, ann_total, entries_mon, entries_mid,
+        entries_fri, entries_sat, entries_sun
+    """
     candidates = [
         DATA_RAW / "AC2023_AnnualisedEntryExit.xlsx",
         DATA_RAW / "AC2024_AnnualisedEntryExit_CrowdingPublic.xlsm",
@@ -264,6 +344,37 @@ def load_crowding_data() -> pd.DataFrame:
 
     path = _resolve_path(*candidates)
 
-    df = pd.read_excel(path, sheet_name=0)
-    print(f"Loaded crowding data from {path.name} ({len(df)} rows)")
+    col_names = [
+        "mode", "mnlc", "masc", "station_name", "coverage", "source",
+        "entries_mon", "entries_mid", "entries_fri", "entries_sat", "entries_sun",
+        "exits_mon", "exits_mid", "exits_fri", "exits_sat", "exits_sun",
+        "weekly_total", "twelve_week_total", "ann_total",
+    ]
+    try:
+        df = pd.read_excel(
+            path,
+            sheet_name="AC23",
+            skiprows=6,
+            header=None,
+            names=col_names,
+        )
+    except KeyError:
+        df = pd.read_excel(
+            path,
+            sheet_name=0,
+            skiprows=6,
+            header=None,
+            names=col_names,
+        )
+
+    # Drop metadata/footer rows (non-numeric ann_total)
+    df = df[pd.to_numeric(df["ann_total"], errors="coerce").notna()].copy()
+    df["ann_total"] = df["ann_total"].astype(float)
+
+    keep = ["mode", "station_name", "ann_total",
+            "entries_mon", "entries_mid", "entries_fri",
+            "entries_sat", "entries_sun"]
+    df = df[keep]
+
+    print(f"Loaded crowding data from {path.name} ({len(df)} stations)")
     return df

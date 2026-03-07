@@ -5,7 +5,7 @@ import geopandas as gpd
 import pandas as pd
 from scipy.spatial import cKDTree
 
-from src.config import DATA_PROCESSED, CRS_BNG, MASTER_GPKG
+from src.config import DATA_PROCESSED, CRS_BNG, MASTER_GPKG, DECAY_ALPHA, CROWDING_RADIUS_M
 
 
 def compute_nearest_station_distance(
@@ -30,6 +30,60 @@ def compute_nearest_station_distance(
     distances, _ = tree.query(lsoa_coords, k=1)
 
     return pd.Series(distances, index=lsoa_gdf.index, name="dist_to_station_m")
+
+
+def compute_lsoa_crowding_pressure(
+    lsoa_gdf: gpd.GeoDataFrame,
+    stations_crowding_gdf: gpd.GeoDataFrame,
+    radius_m: float = CROWDING_RADIUS_M,
+    decay_alpha: float = DECAY_ALPHA,
+) -> pd.DataFrame:
+    """Compute two crowding metrics for each LSOA centroid.
+
+    Args:
+        lsoa_gdf: LSOA polygons in BNG.
+        stations_crowding_gdf: Deduplicated station points (BNG) with
+            'ann_total' column (NaN for unmatched stations).
+        radius_m: Search radius for crowding pressure.
+        decay_alpha: Distance-decay parameter for pressure weighting.
+
+    Returns:
+        DataFrame indexed like lsoa_gdf with two columns:
+            nearest_station_ann_total: ann_total at the nearest matched station.
+            crowding_pressure: sum(ann_total_i * exp(-alpha * dist_i))
+                               for all matched stations within radius_m.
+    """
+    matched = stations_crowding_gdf.dropna(subset=["ann_total"]).copy()
+    if matched.empty:
+        raise ValueError("No stations with crowding data found.")
+
+    centroids = lsoa_gdf.geometry.centroid
+    lsoa_coords = np.column_stack([centroids.x, centroids.y])
+    station_coords = np.column_stack([matched.geometry.x, matched.geometry.y])
+    ann_totals = matched["ann_total"].to_numpy()
+
+    tree = cKDTree(station_coords)
+
+    # Nearest matched station
+    nearest_dists, nearest_idx = tree.query(lsoa_coords, k=1)
+    nearest_ann = ann_totals[nearest_idx]
+
+    # Crowding pressure: all stations within radius_m
+    indices_in_radius = tree.query_ball_point(lsoa_coords, r=radius_m)
+    pressure = np.array([
+        np.sum(ann_totals[idx] * np.exp(-decay_alpha * np.linalg.norm(
+            lsoa_coords[i] - station_coords[idx], axis=1
+        ))) if len(idx) > 0 else 0.0
+        for i, idx in enumerate(indices_in_radius)
+    ])
+
+    return pd.DataFrame(
+        {
+            "nearest_station_ann_total": nearest_ann,
+            "crowding_pressure": pressure,
+        },
+        index=lsoa_gdf.index,
+    )
 
 
 def spatial_average_ptal(
@@ -74,6 +128,7 @@ def build_master_geodataframe(
     imd_df: pd.DataFrame | None = None,
     census_popden_df: pd.DataFrame | None = None,
     census_econ_df: pd.DataFrame | None = None,
+    crowding_df: pd.DataFrame | None = None,
     save: bool = True,
 ) -> gpd.GeoDataFrame:
     """Build the master LSOA GeoDataFrame by joining all Stage 1 data.
@@ -85,6 +140,7 @@ def build_master_geodataframe(
         imd_df: IMD 2019 scores (optional, must have 'lsoa_code').
         census_popden_df: Census 2021 population density (optional, must have 'lsoa_code').
         census_econ_df: Census economic activity (optional, must have 'lsoa_code').
+        crowding_df: TfL annual entry/exit crowding data (optional).
         save: Whether to save the result as GeoPackage.
 
     Returns:
@@ -136,16 +192,17 @@ def build_master_geodataframe(
             how="left",
         )
 
+    # 6. Crowding pressure (station-level → LSOA spatial aggregation)
+    if crowding_df is not None:
+        print("Computing crowding pressure ...")
+        from src.data_loader import join_crowding_to_stations
+        stations_crowding = join_crowding_to_stations(stations_gdf, crowding_df)
+        crowding_cols = compute_lsoa_crowding_pressure(master, stations_crowding)
+        master["nearest_station_ann_total"] = crowding_cols["nearest_station_ann_total"]
+        master["crowding_pressure"] = crowding_cols["crowding_pressure"]
+
     # Derived columns
     master["area_km2"] = master.geometry.area / 1e6
-
-    # Population from shapefile (USUALRES) — rename for clarity
-    if "USUALRES" in master.columns:
-        master = master.rename(columns={"USUALRES": "population"})
-
-    # Population density from 2011 boundaries (population / area)
-    if "population" in master.columns:
-        master["pop_density_km2"] = master["population"] / master["area_km2"]
 
     # Employment rate from census economic data
     if "in_employment" in master.columns and "total_16plus" in master.columns:
