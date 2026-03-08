@@ -24,7 +24,7 @@
 
 ### 4. innovative external factors
 - where are future developments planned?
-- property value uplift modelling,
+- property value uplift modelling
 - opportunity area alignment
 - historical tfl station placing
 
