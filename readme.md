@@ -22,11 +22,10 @@
 - cross-london (north-south) connectivity improvements
 - first/last mile reduction estimates
 
-### 4. innovative external factors
-- where are future developments planned?
-- property value uplift modelling
-- opportunity area alignment
-- historical tfl station placing
+### 4. historical tfl station analysis
+- how have previous new stations performed?
+- what can we learn from past station openings?
+- what factors contribute to new station success?
 
 ## datasets
 - station counts
